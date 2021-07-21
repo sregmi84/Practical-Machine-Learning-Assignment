@@ -1,0 +1,138 @@
+---
+title: "Practical Machine Learning Assignment"
+author: "Surabh"
+date: "7/20/2021"
+output:
+  pdf_document: default
+  html_document: default
+  keep_md: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Executive Summary
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively.  In this project, the goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: [http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har)
+
+Data downloaded from:
+Training Data:
+[https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+
+Testing Data:
+[https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+## Data Load
+First we download the data.
+
+```{r dataDownload}
+library(caret)
+#Set Working Directory to relevant folder 
+setwd("~/Coursera/Practical Machine Learning/Week 4/Assignment")
+trainURL <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testURL <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+training <- read.csv(url(trainURL))
+testing <- read.csv(url(testURL))
+
+dim(training) 
+dim(testing)
+```
+## Exploratory Data Analysis
+Then we split the training data to train and test sub-groups. We will only use the "testing" data for final validation. 
+
+```{r dataPartition}
+library(caret)
+indexTrain <- createDataPartition(training$classe, p = 0.7, list = FALSE)
+trainSet <- training[indexTrain, ]
+testSet <- training[-indexTrain, ]
+```
+We do all our exploratory data analysis on the train sub-group.
+
+```{r explore, eval=FALSE}
+str(trainSet)
+head(trainSet,n=3)
+summary(trainSet)
+```
+We can see that there are some near zero variables and variables that contain lots of NA. We can exclude them from our prediction model.
+
+```{r dataClean}
+NZV <- nearZeroVar(trainSet)
+trainSet <- trainSet[ ,-NZV]
+testSet <- testSet[ ,-NZV]
+label <- apply(trainSet, 2, function(x) mean(is.na(x))) > 0.95
+trainSet <- trainSet[, -which(label, label == FALSE)]
+testSet <- testSet[, -which(label, label == FALSE)]
+trainSet <- trainSet[ , -(1:5)]
+testSet <- testSet[ , -(1:5)]
+```
+We can now do some correlation plots.
+
+```{r CorrelationPlot, fig.width=12, fig.height=8}
+library(corrplot)
+corrMat <- cor(trainSet[,-54])
+corrplot(corrMat, method = "color", type = "lower", tl.cex = 0.8, tl.col = rgb(0,0,0))
+```
+We could do some Principle Component Analysis to further reduce the correlated variables to improve our model in future studies.Although, there are not that many highly correlated variables so that will not impact our prediction models significantly.
+
+## Prediction Model Selection
+We will predict with Decision Tree (rpart), Random Forest(rf) and Generalized Boosted Model (gbm). 
+
+### Decision Tree
+```{r decisionTree, message = FALSE, warning = FALSE, fig.width=6, fig.height=4}
+library(caret)
+library(e1071)
+library(rattle)
+set.seed(123)
+modelDT <- train(classe ~ ., data = trainSet, method = "rpart")
+modelDT$finalModel
+fancyRpartPlot(modelDT$finalModel)
+predictDT <- predict(modelDT, testSet)
+confMatDT <- confusionMatrix(predictDT, testSet$classe)
+confMatDT
+```
+### Random Forest
+Configure parallel processing server first. This will help run the Random Forest faster, else it runs too slow.
+
+```{r configParallel}
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores() - 1) # leave 1 core for OS
+registerDoParallel(cluster)
+```
+
+```{r RandomForest, message = FALSE}
+library(caret)
+set.seed(123)
+controlRF <- trainControl(method = "cv", number = 3, verboseIter=FALSE, allowParallel = TRUE)
+modelRF <- train(classe ~ ., data = trainSet, method = "rf", trControl = controlRF)
+modelRF$finalModel
+predictRF <- predict(modelRF, testSet)
+confMatRF <- confusionMatrix(predictRF, testSet$classe)
+confMatRF
+```
+```{r deregisterParallel}
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+### Generalized Boost Model
+```{r GBM, message = FALSE}
+library(caret)
+set.seed(123)
+controlGBM <- trainControl(method = "repeatedcv", number = 3, repeats = 1, verboseIter = FALSE)
+modelGBM <- train(classe ~ ., data = trainSet, trControl = controlGBM, method = "gbm", verbose = FALSE)
+modelGBM$finalModel
+predictGBM <- predict(modelGBM, testSet)
+confMatGBM <- confusionMatrix(predictGBM, testSet$classe)
+confMatGBM
+```
+We use a training sub group to train each of the models and test on a test sub group. We use cross validation as train control parameter in the Random Forest and GBM models.
+From the 3 models, we see that Random Forest has the highest accuracy on the test sub-group (~99.7%) and that is the model we will pick for our predictions as it has the best out of sample accuracy. 
+
+## Final Model Fit on Validation Data
+We will now fit the Random Forest model on our validation data set.
+
+```{r finalModelValidation, messages = FALSE}
+predictRFTest <- predict(modelRF, testing)
+predictRFTest
+```
